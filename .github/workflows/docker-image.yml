@@ -17,5 +17,7 @@ jobs:
     - name: Build the Docker image
       run: docker build ./api/ -t veisen/bambu-moonraker-shim:latest
     - name: Publish image
-      run: docker push veisen/bambu-moonraker-shim:latest
+      run: 
+        docker login -u veisen -p ${{ secrets.DOCKER_HUB_TOKEN }}
+        docker push veisen/bambu-moonraker-shim:latest
       
