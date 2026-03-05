@@ -154,7 +154,7 @@ BAMBU_FTPS_UPLOADS_DIR=/
 * **BAMBU_HOST**: Your printer's IP address (find in printer settings)
 * **BAMBU_ACCESS_CODE**: LAN access code (displayed on printer screen)
 * **BAMBU_SERIAL**: Printer serial number (displayed on printer screen)
-* **BAMBU_MODEL**: Optional model hint (`H2D`, `P2S`, `N7`, `A1`, `A1 Mini`) for model-specific command behavior
+* **BAMBU_MODEL**: Optional model hint (`H2D`, `P2S`, `N7`, `A1`, `A1 Mini`) for model-specific behavior. `P1*`/`A1*` models hide chamber temperature objects in Mainsail.
 * **BAMBU_MODE**: Use `local` for LAN-only mode (recommended)
 
 ## Usage

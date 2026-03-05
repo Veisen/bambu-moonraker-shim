@@ -35,3 +35,23 @@ if not os.path.exists(Config.GCODES_DIR):
 
 def parse_bool(value: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalized_model_name(model: str | None = None) -> str:
+    value = Config.BAMBU_MODEL if model is None else model
+    return str(value or "").strip().upper()
+
+
+def model_supports_chamber_temperature(model: str | None = None) -> bool:
+    """
+    Determine whether chamber temperature should be exposed in Moonraker state.
+
+    P1/A1 series do not provide a useful chamber temperature sensor in this shim
+    context, so we hide chamber heater/sensor objects when model hints indicate
+    those families.
+    """
+    model_name = normalized_model_name(model)
+    if not model_name:
+        # Preserve existing behavior when model is unknown.
+        return True
+    return "P1" not in model_name and "A1" not in model_name
