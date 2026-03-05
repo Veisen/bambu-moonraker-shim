@@ -78,13 +78,14 @@ This allows you to use the Mainsail UI to **monitor and partially control** a Ba
 
 ### Files (Partial / Experimental)
 
+* Mainsail file browser compatibility (`gcodes` + `config` roots)
 * File listing (via printer FTPS)
 * File upload (via FTPS)
 * File deletion (via FTPS)
+* File download endpoint for `gcodes` (local in mock mode, FTPS-backed with printer)
 
 ## What Does NOT Work (Yet)
 
-* ❌ Start prints from uploaded files (basic implementation exists)
 * ❌ Full interactive G-code console
 * ❌ Custom user-defined Klipper macros
 * ❌ Webcam bridging
@@ -197,6 +198,8 @@ docker build -t bambu-moonraker-shim .
 docker run \
   --env-file .env \
   -p 8080:80 \
+  -v "$PWD/bambu_shim.db:/app/bambu_shim.db" \
+  -v "$PWD/moonraker.json:/app/moonraker.json" \
   bambu-moonraker-shim
 ```
 
@@ -216,6 +219,8 @@ If bridge networking causes issues, use host mode:
 docker run \
   --env-file .env \
   --network host \
+  -v "$PWD/bambu_shim.db:/app/bambu_shim.db" \
+  -v "$PWD/moonraker.json:/app/moonraker.json" \
   bambu-moonraker-shim
 ```
 
@@ -223,6 +228,31 @@ Access Mainsail at:
 
 ```
 http://localhost
+```
+
+### Persistent Data
+
+The bind mounts above persist runtime data across container restarts:
+
+* `bambu_shim.db` - SQLite data store used by the shim
+* `moonraker.json` - Moonraker-style JSON database (Mainsail settings, webcam entries, etc.)
+
+Create files once if needed:
+
+```bash
+touch bambu_shim.db moonraker.json
+```
+
+### Mock Mode (No Printer)
+
+To run in mock mode (no `BAMBU_SERIAL` / no `.env`), start without `--env-file`:
+
+```bash
+docker run \
+  -p 8080:80 \
+  -v "$PWD/bambu_shim.db:/app/bambu_shim.db" \
+  -v "$PWD/moonraker.json:/app/moonraker.json" \
+  bambu-moonraker-shim
 ```
 
 ## Fan Control
@@ -372,13 +402,14 @@ END_PRINT
 * Cache invalidation happens on uploads/deletes
 * Large file listings may be slow on first load
 * File operations require same credentials as MQTT (username: `bblp`, password: access code)
+* In mock mode (no `BAMBU_SERIAL`), file browsing uses local mock files and does not require FTPS
 
 ### General
 
 * **LAN-only mode recommended**: For full local control, set your printer to LAN-only mode in Bambu Studio/Handy app
 * **Firmware updates**: Bambu firmware updates may change MQTT/FTPS behavior
 * **No custom macros**: Only the built-in macros listed above are supported; custom user-defined macros cannot be added
-* **Print start**: Starting prints from uploaded files has limited implementation
+* **Print start**: Starting prints from uploaded files is supported, but behavior can vary by model/firmware and file format
 
 ## Troubleshooting
 
@@ -411,6 +442,13 @@ END_PRINT
 2. Check printer allows local FTPS connections
 3. Try refreshing file list to clear cache
 4. Ensure printer is not in cloud-only mode
+
+### G-codes Tab Missing In Mainsail
+
+1. Hard refresh Mainsail (`Ctrl+Shift+R` / `Cmd+Shift+R`)
+2. Confirm `/server/info` includes `registered_directories` with `gcodes`
+3. Confirm `/server/files/roots` returns both `gcodes` and `config`
+4. In mock mode, run without `.env` so FTPS is not queried
 
 ## Limitations / Roadmap
 
