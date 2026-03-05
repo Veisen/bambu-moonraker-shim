@@ -45,6 +45,26 @@ class BambuClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"result": "ok"})
         client.send_gcode_line.assert_awaited_with("M141 S45\n")
 
+    async def test_non_ams_load_unload_commands(self):
+        client = BambuClient()
+        client.connected = True
+        client._mqtt_client = AsyncMock()
+        client.publish_command = AsyncMock()
+
+        result = await client.load_filament()
+        self.assertEqual(result, {"result": "ok"})
+        self.assertEqual(
+            client.publish_command.await_args_list[0].args[0],
+            {"print": {"command": "load_filament"}},
+        )
+
+        result = await client.unload_filament()
+        self.assertEqual(result, {"result": "ok"})
+        self.assertEqual(
+            client.publish_command.await_args_list[1].args[0],
+            {"print": {"command": "unload_filament"}},
+        )
+
     async def test_start_print_h2d_converts_calibration_fields_to_ints(self):
         client = BambuClient()
         client.connected = True

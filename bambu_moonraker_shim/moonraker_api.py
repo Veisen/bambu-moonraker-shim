@@ -393,26 +393,36 @@ async def _handle_macro(macro_name: str, params: Dict[str, str]) -> Dict[str, An
         return {"result": "ok", "action": "bed_mesh_calibrate"}
 
     if macro_name == "LOAD_FILAMENT":
-        tray = params.get("TRAY_ID") or params.get("TRAY") or params.get("SLOT") or "0"
-        ams_id = params.get("AMS_ID") or "0"
-        slot_id = params.get("SLOT_ID") or params.get("SLOT") or "0"
-        try:
-            tray_id = int(tray)
-            ams_index = int(ams_id)
-            slot_index = int(slot_id)
-        except (TypeError, ValueError):
-            return {"error": "LOAD_FILAMENT expects numeric TRAY_ID/AMS_ID/SLOT_ID"}
-        result = await bambu_client.ams_load_filament(
-            tray_id=tray_id,
-            ams_id=ams_index,
-            slot_id=slot_index,
+        has_explicit_ams_params = any(
+            key in params for key in ("TRAY_ID", "TRAY", "AMS_ID", "SLOT_ID", "SLOT")
         )
+        if has_explicit_ams_params:
+            tray = params.get("TRAY_ID") or params.get("TRAY") or params.get("SLOT") or "0"
+            ams_id = params.get("AMS_ID") or "0"
+            slot_id = params.get("SLOT_ID") or params.get("SLOT") or "0"
+            try:
+                tray_id = int(tray)
+                ams_index = int(ams_id)
+                slot_index = int(slot_id)
+            except (TypeError, ValueError):
+                return {"error": "LOAD_FILAMENT expects numeric TRAY_ID/AMS_ID/SLOT_ID"}
+            result = await bambu_client.ams_load_filament(
+                tray_id=tray_id,
+                ams_id=ams_index,
+                slot_id=slot_index,
+            )
+        else:
+            result = await bambu_client.load_filament()
         if "error" in result:
             return result
         return {"result": "ok", "action": "load_filament"}
 
     if macro_name == "UNLOAD_FILAMENT":
-        result = await bambu_client.ams_unload_filament()
+        has_explicit_ams_params = any(key in params for key in ("AMS", "AMS_ID", "SLOT_ID", "TRAY_ID"))
+        if has_explicit_ams_params:
+            result = await bambu_client.ams_unload_filament()
+        else:
+            result = await bambu_client.unload_filament()
         if "error" in result:
             return result
         return {"result": "ok", "action": "unload_filament"}

@@ -477,6 +477,16 @@ class BambuClient:
         await self.publish_command(cmd)
         return {"result": "ok"}
 
+    async def load_filament(self) -> Dict[str, Any]:
+        cmd = {"print": {"command": "load_filament"}}
+        await self.publish_command(cmd)
+        return {"result": "ok"}
+
+    async def unload_filament(self) -> Dict[str, Any]:
+        cmd = {"print": {"command": "unload_filament"}}
+        await self.publish_command(cmd)
+        return {"result": "ok"}
+
     async def ams_load_filament(self, tray_id: int, ams_id: int = 0, slot_id: int = 0) -> Dict[str, Any]:
         try:
             tray = int(tray_id)
