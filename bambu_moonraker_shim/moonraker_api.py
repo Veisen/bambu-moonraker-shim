@@ -25,6 +25,9 @@ _DEFAULT_DISK_USAGE = {
 }
 
 _GCODE_FILE_SUFFIXES = (".gcode", ".gcode.3mf", ".3mf")
+_CONFIG_THEME_FILES = {
+    "maintenance.json": "{}",
+}
 _EXCLUDED_GCODES_ROOT_DIRS = {
     "logger",
     "recorder",
@@ -96,24 +99,55 @@ def _config_file_listing():
                 "permissions": "rw",
             }
         )
+    for name, content in _CONFIG_THEME_FILES.items():
+        files.append(
+            {
+                "path": f".theme/{name}",
+                "size": len(content.encode("utf-8")),
+                "modified": now,
+                "permissions": "rw",
+            }
+        )
     return files
 
 
-def _config_directory_listing():
+def _config_directory_listing(path: str = "config"):
     now = time.time()
+    dirs = []
     files = []
-    for name, content in CONFIG_FILES.items():
-        files.append(
+    if path == "config":
+        dirs.append(
             {
-                "filename": name,
+                "dirname": ".theme",
                 "modified": now,
-                "size": len(content.encode("utf-8")),
+                "size": 0,
                 "permissions": "rw",
-                "path": name,
+                "path": ".theme",
             }
         )
+        for name, content in CONFIG_FILES.items():
+            files.append(
+                {
+                    "filename": name,
+                    "modified": now,
+                    "size": len(content.encode("utf-8")),
+                    "permissions": "rw",
+                    "path": name,
+                }
+            )
+    elif path == "config/.theme":
+        for name, content in _CONFIG_THEME_FILES.items():
+            files.append(
+                {
+                    "filename": name,
+                    "modified": now,
+                    "size": len(content.encode("utf-8")),
+                    "permissions": "rw",
+                    "path": name,
+                }
+            )
     return {
-        "dirs": [],
+        "dirs": dirs,
         "files": files,
         "disk_usage": dict(_DEFAULT_DISK_USAGE),
         "root_info": {
@@ -265,6 +299,8 @@ def _server_info_payload(include_history: bool = True) -> Dict[str, Any]:
 
     return {
         "state": "ready",
+        "state_message": "Printer is ready",
+        "klippy_connected": True,
         "klippy_state": "ready",
         "components": components,
         "registered_directories": ["gcodes", "config"],
@@ -709,8 +745,8 @@ async def get_directory(path: str = "gcodes", extended: bool = False):
     """
     sqlite_manager = get_sqlite_manager()
 
-    if path == "config":
-        return _config_directory_listing()
+    if path == "config" or path == "config/.theme":
+        return _config_directory_listing(path)
 
     if not Config.BAMBU_SERIAL and path == "gcodes":
         return _mock_directory_listing(path)
@@ -903,11 +939,12 @@ async def file_delete(filename: str):
 
 @router.get("/server/files/{root}/{path:path}")
 async def file_download(root: str, path: str):
-    # Mocking theme files to avoid 404s for Mainsail
-    if root == "config" and ".theme" in path:
-        # Return empty JSON for theme files to satisfy Mainsail
-        return success_response({})
     if root == "config":
+        if path.startswith(".theme/"):
+            theme_name = path.split("/", 1)[1]
+            content = _CONFIG_THEME_FILES.get(theme_name)
+            if content is not None:
+                return Response(content=content, media_type="application/json")
         content = CONFIG_FILES.get(path)
         if content is not None:
             return PlainTextResponse(content)
@@ -944,21 +981,19 @@ async def file_download(root: str, path: str):
 
 @router.get("/server/files/metadata")
 async def file_metadata(filename: str):
-    return success_response(
-        {
-            "filename": filename,
-            "size": 1234,
-            "modified": time.time(),
-            "slicer": "BambuStudio",
-            "slicer_version": "unknown",
-            "layer_height": 0.2,
-            "first_layer_height": 0.2,
-            "object_height": 10.0,
-            "filament_total": 1000.0,
-            "estimated_time": 3600,
-            "thumbnails": [],
-        }
-    )
+    return {
+        "filename": filename,
+        "size": 1234,
+        "modified": time.time(),
+        "slicer": "BambuStudio",
+        "slicer_version": "unknown",
+        "layer_height": 0.2,
+        "first_layer_height": 0.2,
+        "object_height": 10.0,
+        "filament_total": 1000.0,
+        "estimated_time": 3600,
+        "thumbnails": [],
+    }
 
 
 @router.get("/server/database/item")
@@ -1677,8 +1712,8 @@ async def handle_jsonrpc(
         params = request.get("params", {})
         path = params.get("path", "gcodes")
 
-        if path == "config":
-            response["result"] = _config_directory_listing()
+        if path == "config" or path == "config/.theme":
+            response["result"] = _config_directory_listing(path)
             return response
 
         if not Config.BAMBU_SERIAL and path == "gcodes":
