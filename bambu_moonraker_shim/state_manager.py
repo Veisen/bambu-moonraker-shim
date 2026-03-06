@@ -21,6 +21,9 @@ class StateManager:
                 "available_heaters": ["extruder", "heater_bed", "heater_chamber"],
                 "available_sensors": ["extruder", "heater_bed", "heater_chamber"]
             },
+            "gcode": {
+                "commands": {}
+            },
             "print_stats": {
                 "state": "standby", # standby, printing, paused, complete, error, cancelling
                 "filename": "",
