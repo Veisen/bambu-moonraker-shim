@@ -42,6 +42,7 @@ _EXCLUDED_GCODES_ROOT_DIRS = {
     ".spotlight-v100",
     ".fseventsd",
 }
+_NAMESPACES_WITH_NESTED_DB_VIEW = {"mainsail", "fluidd"}
 
 CONFIG_FILES = {
     "printer.cfg": "\n".join(
@@ -656,6 +657,12 @@ def flatten_to_nested(flat_dict: dict) -> dict:
     return nested
 
 
+def _database_namespace_value(namespace: Optional[str], key: Optional[str], value: Any) -> Any:
+    if namespace in _NAMESPACES_WITH_NESTED_DB_VIEW and key is None and isinstance(value, dict):
+        return flatten_to_nested(value)
+    return value
+
+
 # --- HTTP Endpoints ---
 
 
@@ -1000,9 +1007,7 @@ async def file_metadata(filename: str):
 async def database_get(namespace: str, key: str = None):
     # namespace is required, key is optional query param
     val = database_manager.get_item(namespace, key)
-    # Convert flat dotted keys to nested structure for mainsail namespace
-    if namespace == "mainsail" and key is None and isinstance(val, dict):
-        val = flatten_to_nested(val)
+    val = _database_namespace_value(namespace, key, val)
     return success_response({"namespace": namespace, "key": key, "value": val})
 
 
@@ -1242,10 +1247,7 @@ async def handle_jsonrpc(
             val = {}
         else:
             val = database_manager.get_item(namespace, key)
-            # Convert flat dotted keys to nested structure for mainsail namespace
-            # This is required because Mainsail's setDataDeep expects nested objects
-            if namespace == "mainsail" and key is None and isinstance(val, dict):
-                val = flatten_to_nested(val)
+            val = _database_namespace_value(namespace, key, val)
 
         response["result"] = {"namespace": namespace, "key": key, "value": val}
 
