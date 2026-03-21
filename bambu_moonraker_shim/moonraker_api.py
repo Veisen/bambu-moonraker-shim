@@ -7,9 +7,10 @@ import os
 import tempfile
 from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request, UploadFile, File
-from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from bambu_moonraker_shim.state_manager import state_manager
 from bambu_moonraker_shim.bambu_client import bambu_client
+from bambu_moonraker_shim.camera_manager import camera_manager
 from bambu_moonraker_shim.config import Config
 from bambu_moonraker_shim.database_manager import database_manager
 from bambu_moonraker_shim.fan_control import FanTarget, build_fan_command
@@ -161,6 +162,29 @@ def _config_directory_listing(path: str = "config"):
 
 def _join_moonraker_path(root: str, name: str) -> str:
     return f"{root.rstrip('/')}/{name}"
+
+
+def _mjpeg_chunk(frame: bytes) -> bytes:
+    return (
+        b"--"
+        + camera_manager.MJPEG_BOUNDARY.encode("ascii")
+        + b"\r\n"
+        + b"Content-Type: image/jpeg\r\n"
+        + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
+        + frame
+        + b"\r\n"
+    )
+
+
+def _current_webcams() -> List[Dict[str, Any]]:
+    webcams = database_manager.get_item("moonraker", "webcams") or []
+    builtin_webcam = camera_manager.get_builtin_webcam()
+    if not builtin_webcam:
+        return webcams
+
+    builtin_uid = builtin_webcam["uid"]
+    filtered = [cam for cam in webcams if cam.get("uid") != builtin_uid]
+    return [builtin_webcam, *filtered]
 
 
 def _mock_gcode_file() -> Dict[str, Any]:
@@ -681,6 +705,40 @@ async def printer_info():
             "firmware_version": "unknown",
             "software_version": "bambu-moonraker-shim",
         }
+    )
+
+
+@router.get("/webcam")
+async def webcam_proxy(request: Request, action: str):
+    if action == "snapshot":
+        frame = await camera_manager.wait_for_frame(timeout=10.0)
+        if frame is None:
+            return PlainTextResponse("Camera frame unavailable", status_code=503)
+        return Response(content=frame, media_type="image/jpeg")
+
+    if action != "stream":
+        return PlainTextResponse("Unsupported webcam action", status_code=400)
+
+    if not camera_manager.is_configured:
+        return PlainTextResponse("Camera streaming not configured", status_code=503)
+
+    async def frame_generator():
+        queue = await camera_manager.subscribe()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    frame = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    continue
+                yield _mjpeg_chunk(frame)
+        finally:
+            camera_manager.unsubscribe(queue)
+
+    return StreamingResponse(
+        frame_generator(),
+        media_type=f"multipart/x-mixed-replace; boundary={camera_manager.MJPEG_BOUNDARY}",
     )
 
 
@@ -1337,15 +1395,14 @@ async def handle_jsonrpc(
         response["result"] = "ok"
 
     elif method == "server.webcams.list":
-        # Retrieve webcams from database
-        # We'll store them in namespace "moonraker", key "webcams" as a list
-        webcams = database_manager.get_item("moonraker", "webcams")
-        if not webcams:
-            webcams = []
-        response["result"] = {"webcams": webcams}
+        response["result"] = {"webcams": _current_webcams()}
 
     elif method == "server.webcams.post_item":
         params = request.get("params", {})
+        builtin_webcam = camera_manager.get_builtin_webcam()
+        if builtin_webcam and params.get("uid") == builtin_webcam["uid"]:
+            response["result"] = {"item": builtin_webcam}
+            return response
         # Load existing
         webcams = database_manager.get_item("moonraker", "webcams") or []
 
@@ -1413,6 +1470,10 @@ async def handle_jsonrpc(
 
     elif method == "server.webcams.delete_item":
         uid = request.get("params", {}).get("uid")
+        builtin_webcam = camera_manager.get_builtin_webcam()
+        if builtin_webcam and uid == builtin_webcam["uid"]:
+            response["result"] = {"item": {"uid": uid}}
+            return response
         webcams = database_manager.get_item("moonraker", "webcams") or []
 
         # Filter out the one to delete
@@ -1427,8 +1488,7 @@ async def handle_jsonrpc(
             response["result"] = {"item": {"uid": uid}}
 
     elif method == "server.webcams.test":
-        # Just return ok for now
-        response["result"] = {"can_stream": True}
+        response["result"] = {"can_stream": camera_manager.get_builtin_webcam() is not None}
 
     elif method == "server.config":
         response["result"] = {"config": {}}
@@ -1879,7 +1939,7 @@ async def handle_jsonrpc(
 
 
 async def notify_webcams_changed():
-    webcams = database_manager.get_item("moonraker", "webcams") or []
+    webcams = _current_webcams()
     await manager.broadcast(
         {
             "jsonrpc": "2.0",

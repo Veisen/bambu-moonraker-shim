@@ -19,6 +19,11 @@ class Config:
     # Server specific
     HTTP_PORT = int(os.getenv("HTTP_PORT", "7125")) # Default Moonraker port
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+    # Camera specific
+    BAMBU_CAMERA_ENABLED = os.getenv("BAMBU_CAMERA_ENABLED", "true")
+    BAMBU_CAMERA_PORT = int(os.getenv("BAMBU_CAMERA_PORT", "6000"))
+    BAMBU_CAMERA_USERNAME = os.getenv("BAMBU_CAMERA_USERNAME", "bblp")
     
     # FTPS specific
     BAMBU_FTPS_PORT = int(os.getenv("BAMBU_FTPS_PORT", "990"))
