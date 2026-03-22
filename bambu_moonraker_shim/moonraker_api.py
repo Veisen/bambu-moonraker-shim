@@ -1046,19 +1046,7 @@ async def file_download(root: str, path: str):
 
 @router.get("/server/files/metadata")
 async def file_metadata(filename: str):
-    return success_response({
-        "filename": filename,
-        "size": 1234,
-        "modified": time.time(),
-        "slicer": "BambuStudio",
-        "slicer_version": "unknown",
-        "layer_height": 0.2,
-        "first_layer_height": 0.2,
-        "object_height": 10.0,
-        "filament_total": 1000.0,
-        "estimated_time": 3600,
-        "thumbnails": [],
-    })
+    return success_response(bambu_client.get_live_metadata(filename))
 
 
 @router.get("/server/database/item")
@@ -1333,20 +1321,7 @@ async def handle_jsonrpc(
 
     elif method == "server.files.metadata":
         filename = request.get("params", {}).get("filename")
-        # Mock metadata
-        response["result"] = {
-            "filename": filename,
-            "size": 1234,
-            "modified": time.time(),
-            "slicer": "BambuStudio",
-            "slicer_version": "unknown",
-            "layer_height": 0.2,
-            "first_layer_height": 0.2,
-            "object_height": 10.0,
-            "filament_total": 1000.0,
-            "estimated_time": 3600,
-            "thumbnails": [],
-        }
+        response["result"] = bambu_client.get_live_metadata(filename)
 
     elif method == "printer.info":
         response["result"] = {

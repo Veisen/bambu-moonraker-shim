@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import ssl
 import time
 from typing import Optional, Dict, Any, List
@@ -44,6 +45,14 @@ class BambuClient:
         self._mock_progress = 0.0
         self._mock_state = "standby"
         self._mock_filename = "mock_file.gcode"
+        self._job_started_at: Optional[float] = None
+        self._job_paused_at: Optional[float] = None
+        self._job_paused_seconds = 0.0
+        self._active_job_filename = ""
+        self._active_gcode_file = ""
+        self._latest_remaining_time = 0
+        self._latest_layer_num = 0
+        self._latest_total_layer_num = 0
 
     async def start(self):
         """Starts the MQTT loop."""
@@ -113,6 +122,12 @@ class BambuClient:
     async def _parse_telemetry(self, data: Dict[str, Any]):
         """Maps Bambu telemetry to Moonraker state."""
         updates = {}
+        now = time.time()
+        current_filename = str(data.get("subtask_name") or "")
+        current_gcode_file = str(data.get("gcode_file") or "")
+
+        if current_gcode_file:
+            self._active_gcode_file = current_gcode_file
 
         # Extruder (nozzle)
         extruder_update = {}
@@ -192,32 +207,229 @@ class BambuClient:
                 klipper_state = "complete" # Or standby?
             elif bambu_state == "IDLE":
                 klipper_state = "standby"
-            
-            updates["print_stats"] = {"state": klipper_state}
-            
-            # Filename
-            if "subtask_name" in data:
-                updates["print_stats"]["filename"] = data["subtask_name"]
+
+            self._update_job_timing(klipper_state, current_filename, now)
+
+            updates["print_stats"] = {
+                "state": klipper_state,
+                "print_duration": self._current_print_duration(now),
+                "total_duration": self._current_total_duration(now),
+            }
+
+            if current_filename:
+                updates["print_stats"]["filename"] = current_filename
 
             updates["virtual_sdcard"] = {
                 "is_active": klipper_state == "printing"
             }
 
+        if "mc_remaining_time" in data:
+            try:
+                # P1 telemetry reports remaining time in minutes.
+                self._latest_remaining_time = max(0, int(data.get("mc_remaining_time", 0))) * 60
+            except (TypeError, ValueError):
+                self._latest_remaining_time = 0
+
+        if "layer_num" in data or "total_layer_num" in data:
+            if "layer_num" in data:
+                try:
+                    self._latest_layer_num = max(0, int(data.get("layer_num", 0)))
+                except (TypeError, ValueError):
+                    self._latest_layer_num = 0
+            if "total_layer_num" in data:
+                try:
+                    self._latest_total_layer_num = max(0, int(data.get("total_layer_num", 0)))
+                except (TypeError, ValueError):
+                    self._latest_total_layer_num = 0
+            updates.setdefault("print_stats", {})
+            updates["print_stats"]["info"] = {
+                "current_layer": self._latest_layer_num,
+                "total_layer": self._latest_total_layer_num,
+            }
+
         # Progress
         if "mc_percent" in data:
             progress = float(data.get("mc_percent", 0)) / 100.0
+            file_size_hint = self._lookup_file_size_hint(current_gcode_file or current_filename)
             updates.setdefault("virtual_sdcard", {})
             updates["virtual_sdcard"]["progress"] = progress
+            updates["virtual_sdcard"]["file_position"] = int(round(progress * file_size_hint))
             if klipper_state:
                 updates["virtual_sdcard"]["is_active"] = klipper_state == "printing"
 
             updates["display_status"] = {"progress": progress}
-            
-            # Duration (Bambu sends minutes_remaining, logic needed for elapsed)
-            # For MVP we might just use time.time() difference if we tracked start,
-            # or just ignore duration for now if not easily available.
-            
+
+        if "mc_remaining_time" in data and self._job_started_at is not None:
+            updates.setdefault("print_stats", {})
+            progress = float(data.get("mc_percent", 0)) / 100.0 if "mc_percent" in data else 0.0
+            inferred_print_duration = self._inferred_print_duration(progress, now)
+            updates["print_stats"]["print_duration"] = inferred_print_duration
+            updates["print_stats"]["total_duration"] = inferred_print_duration
+
+        filament_total_hint = self._lookup_filament_total_hint(current_gcode_file or current_filename)
+        if filament_total_hint > 0 and "mc_percent" in data:
+            updates.setdefault("print_stats", {})
+            progress = float(data.get("mc_percent", 0)) / 100.0
+            updates["print_stats"]["filament_used"] = round(
+                max(0.0, min(filament_total_hint, filament_total_hint * progress)),
+                3,
+            )
+
         await state_manager.update_state(updates)
+
+    def _update_job_timing(self, state: str, filename: str, now: float):
+        if state == "printing":
+            if not self._active_job_filename or (filename and filename != self._active_job_filename):
+                self._job_started_at = now
+                self._job_paused_at = None
+                self._job_paused_seconds = 0.0
+                self._active_job_filename = filename
+            elif self._job_started_at is None:
+                self._job_started_at = now
+                self._active_job_filename = filename
+
+            if self._job_paused_at is not None:
+                self._job_paused_seconds += max(0.0, now - self._job_paused_at)
+                self._job_paused_at = None
+            return
+
+        if state == "paused":
+            if filename and filename != self._active_job_filename:
+                self._active_job_filename = filename
+            if self._job_started_at is None:
+                self._job_started_at = now
+            if self._job_paused_at is None:
+                self._job_paused_at = now
+            return
+
+        self._job_started_at = None
+        self._job_paused_at = None
+        self._job_paused_seconds = 0.0
+        if state == "standby":
+            self._active_job_filename = ""
+
+    def _current_total_duration(self, now: Optional[float] = None) -> float:
+        if self._job_started_at is None:
+            return 0.0
+        now = time.time() if now is None else now
+        return max(0.0, now - self._job_started_at)
+
+    def _estimated_total_duration(self, now: Optional[float] = None) -> float:
+        now = time.time() if now is None else now
+        if self._latest_remaining_time > 0 and self._job_started_at is not None:
+            current_print_duration = self._current_print_duration(now)
+            progress = 0.0
+            state = state_manager.get_state().get("display_status", {})
+            try:
+                progress = float(state.get("progress") or 0.0)
+            except (TypeError, ValueError):
+                progress = 0.0
+            inferred_print_duration = self._inferred_print_duration(progress, now)
+            return max(current_print_duration, inferred_print_duration) + float(self._latest_remaining_time)
+        return self._current_total_duration(now)
+
+    def _inferred_print_duration(self, progress: float, now: Optional[float] = None) -> float:
+        now = time.time() if now is None else now
+        local_print_duration = self._current_print_duration(now)
+        progress = max(0.0, min(1.0, float(progress)))
+        if self._latest_remaining_time <= 0 or progress <= 0.0 or progress >= 1.0:
+            return local_print_duration
+        inferred_total_duration = float(self._latest_remaining_time) / max(1e-6, (1.0 - progress))
+        inferred_print_duration = max(0.0, inferred_total_duration - float(self._latest_remaining_time))
+        return max(local_print_duration, inferred_print_duration)
+
+    def _current_print_duration(self, now: Optional[float] = None) -> float:
+        if self._job_started_at is None:
+            return 0.0
+        now = time.time() if now is None else now
+        paused_seconds = self._job_paused_seconds
+        if self._job_paused_at is not None:
+            paused_seconds += max(0.0, now - self._job_paused_at)
+        return max(0.0, (now - self._job_started_at) - paused_seconds)
+
+    def get_live_metadata(self, filename: str) -> Dict[str, Any]:
+        estimated_time = int(round(self._estimated_total_duration()))
+        remaining_time = int(max(0, self._latest_remaining_time))
+        file_size_hint = self._lookup_file_size_hint(filename)
+        filament_total = self._lookup_filament_total_hint(filename)
+        layer_height = 0.2
+        object_height = round(self._latest_total_layer_num * layer_height, 3) if self._latest_total_layer_num else 10.0
+        eta = int(time.time()) + estimated_time if estimated_time > 0 else None
+
+        return {
+            "filename": filename,
+            "size": file_size_hint,
+            "modified": time.time(),
+            "slicer": "BambuStudio",
+            "slicer_version": "unknown",
+            "layer_height": layer_height,
+            "first_layer_height": layer_height,
+            "object_height": object_height,
+            "filament_total": filament_total,
+            "filament_weight_total": filament_total,
+            "estimated_time": estimated_time,
+            "estimated_print_time": estimated_time,
+            "remaining_time": remaining_time,
+            "eta": eta,
+            "thumbnails": [],
+        }
+
+    @staticmethod
+    def _normalized_filename_key(filename: str) -> str:
+        value = os.path.basename(str(filename or "")).strip().lower()
+        for suffix in (".gcode.3mf", ".3mf", ".gcode"):
+            if value.endswith(suffix):
+                return value[: -len(suffix)]
+        return value
+
+    def _filename_matches_active(self, filename: str) -> bool:
+        candidate = self._normalized_filename_key(filename)
+        if not candidate:
+            return False
+        active_names = {
+            self._normalized_filename_key(self._active_job_filename),
+            self._normalized_filename_key(self._active_gcode_file),
+        }
+        active_names.discard("")
+        return candidate in active_names
+
+    def _lookup_cached_file_info(self, filename: str) -> Dict[str, Any]:
+        from bambu_moonraker_shim.sqlite_manager import get_sqlite_manager
+
+        sqlite_manager = get_sqlite_manager()
+        candidates = []
+        for value in (filename, self._active_gcode_file, self._active_job_filename):
+            if value:
+                candidates.append(str(value))
+
+        for value in candidates:
+            metadata = sqlite_manager.get_file_metadata(value)
+            if metadata:
+                return metadata
+
+        cached_files = sqlite_manager.get_cached_files(max_age=3600) or []
+        candidate_keys = {self._normalized_filename_key(value) for value in candidates if value}
+        for item in cached_files:
+            item_name = str(item.get("name") or item.get("path") or "")
+            if self._normalized_filename_key(item_name) in candidate_keys:
+                return item
+        return {}
+
+    def _lookup_file_size_hint(self, filename: str) -> int:
+        cached = self._lookup_cached_file_info(filename)
+        try:
+            size_value = int(cached.get("size") or 0)
+        except (TypeError, ValueError, AttributeError):
+            size_value = 0
+        return max(size_value, 1_000_000)
+
+    def _lookup_filament_total_hint(self, filename: str) -> float:
+        cached = self._lookup_cached_file_info(filename)
+        try:
+            filament_total = float(cached.get("filament_total") or 0.0)
+        except (TypeError, ValueError, AttributeError):
+            filament_total = 0.0
+        return filament_total if filament_total > 0 else 1000.0
 
     @staticmethod
     def _normalize_fan_ratio(raw_value: Any) -> Optional[float]:

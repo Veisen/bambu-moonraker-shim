@@ -30,6 +30,11 @@ class StateManager:
                 "print_duration": 0.0,
                 "total_duration": 0.0,
                 "filament_used": 0.0,
+                "message": "",
+                "info": {
+                    "current_layer": 0,
+                    "total_layer": 0,
+                },
             },
             "gcode_macro PAUSE": {},
             "gcode_macro RESUME": {},
