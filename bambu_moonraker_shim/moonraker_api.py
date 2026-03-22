@@ -1741,6 +1741,48 @@ async def handle_jsonrpc(
         else:
             response["result"] = "ok"
 
+    elif method in ("printer.print.pause", "printer.pause"):
+        result = await bambu_client.pause_print()
+        if isinstance(result, dict) and "error" in result:
+            response["error"] = {"code": 500, "message": result["error"]}
+        else:
+            current_filename = state_manager.get_state().get("print_stats", {}).get("filename", "")
+            await state_manager.update_state(
+                {
+                    "print_stats": {"state": "paused", "filename": current_filename},
+                    "virtual_sdcard": {"is_active": False},
+                }
+            )
+            response["result"] = "ok"
+
+    elif method in ("printer.print.resume", "printer.resume"):
+        result = await bambu_client.resume_print()
+        if isinstance(result, dict) and "error" in result:
+            response["error"] = {"code": 500, "message": result["error"]}
+        else:
+            current_filename = state_manager.get_state().get("print_stats", {}).get("filename", "")
+            await state_manager.update_state(
+                {
+                    "print_stats": {"state": "printing", "filename": current_filename},
+                    "virtual_sdcard": {"is_active": True},
+                }
+            )
+            response["result"] = "ok"
+
+    elif method in ("printer.print.cancel", "printer.cancel"):
+        result = await bambu_client.cancel_print()
+        if isinstance(result, dict) and "error" in result:
+            response["error"] = {"code": 500, "message": result["error"]}
+        else:
+            current_filename = state_manager.get_state().get("print_stats", {}).get("filename", "")
+            await state_manager.update_state(
+                {
+                    "print_stats": {"state": "cancelled", "filename": current_filename},
+                    "virtual_sdcard": {"is_active": False},
+                }
+            )
+            response["result"] = "ok"
+
     elif method in ("printer.print.set_speed", "printer.print.speed"):
         params = request.get("params", {})
         mode = params.get("mode")
