@@ -204,6 +204,61 @@ class BambuClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(updates["fan_generic aux"]["speed"], 8.0 / 15.0)
         self.assertAlmostEqual(updates["fan_generic chamber"]["speed"], 3.0 / 15.0)
 
+    async def test_parse_telemetry_exposes_layer_and_duration_fields(self):
+        client = BambuClient()
+        client._job_started_at = 100.0
+        client._active_job_filename = "open back"
+        client._active_gcode_file = "open back.3mf"
+        updates_mock = AsyncMock()
+
+        with patch.object(state_manager, "update_state", updates_mock), patch(
+            "bambu_moonraker_shim.bambu_client.time.time",
+            return_value=160.0,
+        ):
+            await client._parse_telemetry(
+                {
+                    "gcode_state": "RUNNING",
+                    "subtask_name": "open back",
+                    "gcode_file": "open back.3mf",
+                    "mc_percent": 7,
+                    "mc_remaining_time": 188,
+                    "layer_num": 1,
+                    "total_layer_num": 256,
+                }
+            )
+
+        updates = updates_mock.await_args.args[0]
+        self.assertEqual(updates["print_stats"]["state"], "printing")
+        self.assertEqual(updates["print_stats"]["filename"], "open back")
+        self.assertEqual(updates["print_stats"]["info"]["current_layer"], 1)
+        self.assertEqual(updates["print_stats"]["info"]["total_layer"], 256)
+        self.assertAlmostEqual(updates["print_stats"]["print_duration"], 849.032, places=2)
+        self.assertAlmostEqual(updates["print_stats"]["total_duration"], 849.032, places=2)
+        self.assertEqual(updates["print_stats"]["filament_used"], 70.0)
+        self.assertEqual(updates["display_status"]["progress"], 0.07)
+        self.assertEqual(updates["virtual_sdcard"]["file_position"], 70000)
+
+    def test_live_metadata_uses_running_job_remaining_time(self):
+        client = BambuClient()
+        client._active_job_filename = "open back"
+        client._active_gcode_file = "open back.3mf"
+        client._latest_remaining_time = 188 * 60
+        client._job_started_at = 100.0
+        client._latest_total_layer_num = 256
+
+        with patch.object(state_manager, "get_state", return_value={"print_stats": {"filename": "open back"}}), patch(
+            "bambu_moonraker_shim.bambu_client.time.time",
+            return_value=160.0,
+        ):
+            metadata = client.get_live_metadata("open back.3mf")
+
+        self.assertEqual(metadata["estimated_time"], 11340)
+        self.assertEqual(metadata["estimated_print_time"], 11340)
+        self.assertEqual(metadata["remaining_time"], 11280)
+        self.assertEqual(metadata["eta"], 11500)
+        self.assertEqual(metadata["size"], 1000000)
+        self.assertEqual(metadata["slicer"], "BambuStudio")
+
 
 if __name__ == "__main__":
     unittest.main()

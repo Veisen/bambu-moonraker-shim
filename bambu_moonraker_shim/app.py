@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from bambu_moonraker_shim.bambu_client import bambu_client
+from bambu_moonraker_shim.camera_manager import camera_manager
 from bambu_moonraker_shim.database_manager import database_manager
 from bambu_moonraker_shim.moonraker_api import router as moonraker_router
 
@@ -25,6 +26,12 @@ async def startup_event():
     database_manager.ensure_namespaces(["fluidd"])
     # Start the Bambu Client (MQTT loop)
     await bambu_client.start()
+    await camera_manager.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await camera_manager.stop()
 
 
 @app.get("/")

@@ -7,9 +7,10 @@ import os
 import tempfile
 from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request, UploadFile, File
-from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from bambu_moonraker_shim.state_manager import state_manager
 from bambu_moonraker_shim.bambu_client import bambu_client
+from bambu_moonraker_shim.camera_manager import camera_manager
 from bambu_moonraker_shim.config import Config
 from bambu_moonraker_shim.database_manager import database_manager
 from bambu_moonraker_shim.fan_control import FanTarget, build_fan_command
@@ -161,6 +162,29 @@ def _config_directory_listing(path: str = "config"):
 
 def _join_moonraker_path(root: str, name: str) -> str:
     return f"{root.rstrip('/')}/{name}"
+
+
+def _mjpeg_chunk(frame: bytes) -> bytes:
+    return (
+        b"--"
+        + camera_manager.MJPEG_BOUNDARY.encode("ascii")
+        + b"\r\n"
+        + b"Content-Type: image/jpeg\r\n"
+        + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
+        + frame
+        + b"\r\n"
+    )
+
+
+def _current_webcams() -> List[Dict[str, Any]]:
+    webcams = database_manager.get_item("moonraker", "webcams") or []
+    builtin_webcam = camera_manager.get_builtin_webcam()
+    if not builtin_webcam:
+        return webcams
+
+    builtin_uid = builtin_webcam["uid"]
+    filtered = [cam for cam in webcams if cam.get("uid") != builtin_uid]
+    return [builtin_webcam, *filtered]
 
 
 def _mock_gcode_file() -> Dict[str, Any]:
@@ -684,6 +708,40 @@ async def printer_info():
     )
 
 
+@router.get("/webcam")
+async def webcam_proxy(request: Request, action: str):
+    if action == "snapshot":
+        frame = await camera_manager.wait_for_frame(timeout=10.0)
+        if frame is None:
+            return PlainTextResponse("Camera frame unavailable", status_code=503)
+        return Response(content=frame, media_type="image/jpeg")
+
+    if action != "stream":
+        return PlainTextResponse("Unsupported webcam action", status_code=400)
+
+    if not camera_manager.is_configured:
+        return PlainTextResponse("Camera streaming not configured", status_code=503)
+
+    async def frame_generator():
+        queue = await camera_manager.subscribe()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    frame = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    continue
+                yield _mjpeg_chunk(frame)
+        finally:
+            camera_manager.unsubscribe(queue)
+
+    return StreamingResponse(
+        frame_generator(),
+        media_type=f"multipart/x-mixed-replace; boundary={camera_manager.MJPEG_BOUNDARY}",
+    )
+
+
 @router.get("/server/temperature_store")
 async def http_temperature_store(include_monitors: bool = False):
     data = state_manager.get_temperature_history(include_monitors)
@@ -988,19 +1046,7 @@ async def file_download(root: str, path: str):
 
 @router.get("/server/files/metadata")
 async def file_metadata(filename: str):
-    return success_response({
-        "filename": filename,
-        "size": 1234,
-        "modified": time.time(),
-        "slicer": "BambuStudio",
-        "slicer_version": "unknown",
-        "layer_height": 0.2,
-        "first_layer_height": 0.2,
-        "object_height": 10.0,
-        "filament_total": 1000.0,
-        "estimated_time": 3600,
-        "thumbnails": [],
-    })
+    return success_response(bambu_client.get_live_metadata(filename))
 
 
 @router.get("/server/database/item")
@@ -1275,20 +1321,7 @@ async def handle_jsonrpc(
 
     elif method == "server.files.metadata":
         filename = request.get("params", {}).get("filename")
-        # Mock metadata
-        response["result"] = {
-            "filename": filename,
-            "size": 1234,
-            "modified": time.time(),
-            "slicer": "BambuStudio",
-            "slicer_version": "unknown",
-            "layer_height": 0.2,
-            "first_layer_height": 0.2,
-            "object_height": 10.0,
-            "filament_total": 1000.0,
-            "estimated_time": 3600,
-            "thumbnails": [],
-        }
+        response["result"] = bambu_client.get_live_metadata(filename)
 
     elif method == "printer.info":
         response["result"] = {
@@ -1337,15 +1370,14 @@ async def handle_jsonrpc(
         response["result"] = "ok"
 
     elif method == "server.webcams.list":
-        # Retrieve webcams from database
-        # We'll store them in namespace "moonraker", key "webcams" as a list
-        webcams = database_manager.get_item("moonraker", "webcams")
-        if not webcams:
-            webcams = []
-        response["result"] = {"webcams": webcams}
+        response["result"] = {"webcams": _current_webcams()}
 
     elif method == "server.webcams.post_item":
         params = request.get("params", {})
+        builtin_webcam = camera_manager.get_builtin_webcam()
+        if builtin_webcam and params.get("uid") == builtin_webcam["uid"]:
+            response["result"] = {"item": builtin_webcam}
+            return response
         # Load existing
         webcams = database_manager.get_item("moonraker", "webcams") or []
 
@@ -1413,6 +1445,10 @@ async def handle_jsonrpc(
 
     elif method == "server.webcams.delete_item":
         uid = request.get("params", {}).get("uid")
+        builtin_webcam = camera_manager.get_builtin_webcam()
+        if builtin_webcam and uid == builtin_webcam["uid"]:
+            response["result"] = {"item": {"uid": uid}}
+            return response
         webcams = database_manager.get_item("moonraker", "webcams") or []
 
         # Filter out the one to delete
@@ -1427,8 +1463,7 @@ async def handle_jsonrpc(
             response["result"] = {"item": {"uid": uid}}
 
     elif method == "server.webcams.test":
-        # Just return ok for now
-        response["result"] = {"can_stream": True}
+        response["result"] = {"can_stream": camera_manager.get_builtin_webcam() is not None}
 
     elif method == "server.config":
         response["result"] = {"config": {}}
@@ -1706,6 +1741,48 @@ async def handle_jsonrpc(
         else:
             response["result"] = "ok"
 
+    elif method in ("printer.print.pause", "printer.pause"):
+        result = await bambu_client.pause_print()
+        if isinstance(result, dict) and "error" in result:
+            response["error"] = {"code": 500, "message": result["error"]}
+        else:
+            current_filename = state_manager.get_state().get("print_stats", {}).get("filename", "")
+            await state_manager.update_state(
+                {
+                    "print_stats": {"state": "paused", "filename": current_filename},
+                    "virtual_sdcard": {"is_active": False},
+                }
+            )
+            response["result"] = "ok"
+
+    elif method in ("printer.print.resume", "printer.resume"):
+        result = await bambu_client.resume_print()
+        if isinstance(result, dict) and "error" in result:
+            response["error"] = {"code": 500, "message": result["error"]}
+        else:
+            current_filename = state_manager.get_state().get("print_stats", {}).get("filename", "")
+            await state_manager.update_state(
+                {
+                    "print_stats": {"state": "printing", "filename": current_filename},
+                    "virtual_sdcard": {"is_active": True},
+                }
+            )
+            response["result"] = "ok"
+
+    elif method in ("printer.print.cancel", "printer.cancel"):
+        result = await bambu_client.cancel_print()
+        if isinstance(result, dict) and "error" in result:
+            response["error"] = {"code": 500, "message": result["error"]}
+        else:
+            current_filename = state_manager.get_state().get("print_stats", {}).get("filename", "")
+            await state_manager.update_state(
+                {
+                    "print_stats": {"state": "cancelled", "filename": current_filename},
+                    "virtual_sdcard": {"is_active": False},
+                }
+            )
+            response["result"] = "ok"
+
     elif method in ("printer.print.set_speed", "printer.print.speed"):
         params = request.get("params", {})
         mode = params.get("mode")
@@ -1879,7 +1956,7 @@ async def handle_jsonrpc(
 
 
 async def notify_webcams_changed():
-    webcams = database_manager.get_item("moonraker", "webcams") or []
+    webcams = _current_webcams()
     await manager.broadcast(
         {
             "jsonrpc": "2.0",
