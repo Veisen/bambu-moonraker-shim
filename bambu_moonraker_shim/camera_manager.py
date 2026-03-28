@@ -140,9 +140,9 @@ class P1CameraManager:
 
         reader, writer = await asyncio.open_connection(
             self.host,
-            self.port,
+            "8181",
             ssl=tls_context,
-            server_hostname="192.168.1.27:8181",
+            server_hostname=self.host,
         )
 
         try:
