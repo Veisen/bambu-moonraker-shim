@@ -73,8 +73,8 @@ class P1CameraManager:
             "location": "printer",
             "service": "mjpegstreamer",
             "target_fps": 2,
-            "stream_url": "/webcam?action=stream",
-            "snapshot_url": "/webcam?action=snapshot",
+            "stream_url": "http://192.168.1.27:8181/webcam?action=stream",
+            "snapshot_url": "http://192.168.1.27:8181/webcam?action=snapshot",
             "flip_horizontal": False,
             "flip_vertical": False,
             "rotation": 0,
@@ -140,7 +140,7 @@ class P1CameraManager:
 
         reader, writer = await asyncio.open_connection(
             self.host,
-            "8181",
+            self.port,
             ssl=tls_context,
             server_hostname=self.host,
         )
