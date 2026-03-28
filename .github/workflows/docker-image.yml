@@ -15,13 +15,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Build the Docker image
-      run: docker build . -t veisen/bambu-moonraker-shim:latest \
-           --build-arg MAINSAIL_URL="https://github.com/mainsail-crew/mainsail/releases/download/v2.17.0/mainsail.zip" \
-           --build-arg MAINSAIL_SHA256="d010f4df25557d520ccdbb8e42fc381df2288e6a5c72d3838a5a2433c7a31d4e" \
-           --build-arg FLUIDD_URL="https://github.com/fluidd-core/fluidd/releases/download/v<fluidd-version>/fluidd.zip" \
-           --build-arg FLUIDD_SHA256="<fluidd-zip-sha256>" \
-           --build-arg CNC_UI_URL="https://github.com/justinh-rahb/moonraker-cnc/archive/56061199fb319d06fff9076f3895fd1e789d7587.zip" \
-           --build-arg CNC_UI_SHA256="<cnc-ui-zip-sha256>"
+      run: docker build . -t veisen/bambu-moonraker-shim:latest --build-arg MAINSAIL_URL="https://github.com/mainsail-crew/mainsail/releases/download/v2.17.0/mainsail.zip" --build-arg MAINSAIL_SHA256="d010f4df25557d520ccdbb8e42fc381df2288e6a5c72d3838a5a2433c7a31d4e" --build-arg FLUIDD_URL="https://github.com/fluidd-core/fluidd/releases/download/v<fluidd-version>/fluidd.zip" --build-arg FLUIDD_SHA256="<fluidd-zip-sha256>" --build-arg CNC_UI_URL="https://github.com/justinh-rahb/moonraker-cnc/archive/56061199fb319d06fff9076f3895fd1e789d7587.zip" --build-arg CNC_UI_SHA256="<cnc-ui-zip-sha256>"
     - name: Login to Docker Registry
       uses: docker/login-action@v3
       with:
