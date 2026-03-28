@@ -142,7 +142,7 @@ class P1CameraManager:
             self.host,
             self.port,
             ssl=tls_context,
-            server_hostname=self.host ":8181",
+            server_hostname=192.168.1.27:8181,
         )
 
         try:
